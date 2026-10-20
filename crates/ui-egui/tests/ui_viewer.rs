@@ -2841,3 +2841,40 @@ fn path_marquee_combines_shape_and_mask_points_without_moving_the_layer() {
     assert_eq!(h.state().session.state.selected_vertices.len(), 2);
     assert!(h.state().auto.find("viewer.freeTransform.handle.0").is_some());
 }
+
+#[test]
+fn review_failed_vertex_drag_finishes_and_keeps_the_next_undo_separate() {
+    let mut s = Session::default();
+    s.execute("comp.new", json!({"width":640,"height":360,"duration":3})).unwrap();
+    let layer = s.execute("layer.newSolid", json!({"width":640,"height":360})).unwrap()["layer"].as_u64().unwrap();
+    let first = s.execute("mask.new", json!({"layer":layer,"vertices":[[100,100],[300,100],[300,250]],"closed":true})).unwrap()["mask"].as_u64().unwrap();
+    let locked = s.execute("mask.new", json!({"layer":layer,"vertices":[[400,100],[500,100],[500,250]],"closed":true})).unwrap()["mask"].as_u64().unwrap();
+    let cid = s.active_comp_id().unwrap();
+    let group = std::sync::Arc::make_mut(&mut s.project).comp_mut(cid).unwrap().layer_mut(LayerId(layer)).unwrap().props.find_group_mut(locked).unwrap();
+    if let effectcraft_engine::project::GroupKind::Mask { locked, .. } = &mut group.kind {
+        *locked = true;
+    }
+    s.execute("mask.selectVertices", json!({"vertices":[{"layer":layer,"mask":first,"index":0}]})).unwrap();
+    s.execute("view.snapping", json!({"value":false})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_eframe(move |_| EffectcraftApp::new(s));
+    h.run_steps(3);
+    let from = screen(&h, [100.0, 100.0]);
+    let to = screen(&h, [130.0, 120.0]);
+    drag_out(&mut h, from, to, Default::default());
+    let partial = h.state().session.project.clone();
+    h.state_mut().session.state.selected_vertices.push(effectcraft_engine::VertexRef { layer: LayerId(layer), mask: locked, index: 0 });
+    h.event(Event::PointerMoved(to + vec2(20.0, 10.0)));
+    h.run_steps(2);
+    let n = h.ctx.data(|d| d.get_temp::<u64>(egui::Id::new("viewer-drag-n")).unwrap_or(0));
+    release(&mut h, to + vec2(20.0, 10.0), Default::default());
+    h.run_steps(2);
+    assert_eq!(h.ctx.data(|d| d.get_temp::<u64>(egui::Id::new("viewer-drag-n")).unwrap_or(0)), n + 1, "failed drag still cleans up on release");
+    assert_eq!(h.state().session.project, partial);
+    h.state_mut().session.execute("mask.selectVertices", json!({"vertices":[{"layer":layer,"mask":first,"index":0}]})).unwrap();
+    let from = screen(&h, [130.0, 120.0]);
+    let to = screen(&h, [150.0, 120.0]);
+    drag(&mut h, from, to);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(2);
+    assert_eq!(h.state().session.project, partial, "Undo preserves the successful part of the previous gesture");
+}

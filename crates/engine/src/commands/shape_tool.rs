@@ -440,7 +440,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Shape Tool",
             [],
             None,
-            "{layer?, kind?: rect|rounded|ellipse|polygon|star, size? [w,h], position? [x,y] (the centre), space?: comp|layer, name? (a new layer's), fill?, fillType?, fillBlend?, fillOpacity?, stroke?, strokeType?, strokeBlend?, strokeOpacity?, strokeWidth? (default the Tools bar's, shape.toolOptions), points? (polygon, star), roundness? % (rounded), innerRadius? % of the outer (star), outerRoundness? %, innerRoundness? %} → {layer, group}",
+            "{layer?, kind?: rect|rounded|ellipse|polygon|star, size? [w,h], position? [x,y] (the centre), rotation?: deg, space?: comp|layer, name? (a new layer's), fill?, fillType?, fillBlend?, fillOpacity?, stroke?, strokeType?, strokeBlend?, strokeOpacity?, strokeWidth? (default the Tools bar's, shape.toolOptions), points? (polygon, star), roundness? % (rounded), innerRadius? % of the outer (star), outerRoundness? %, innerRoundness? %} → {layer, group}",
             has_comp,
             new_shape
         ),

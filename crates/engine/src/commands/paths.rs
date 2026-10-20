@@ -334,7 +334,7 @@ fn free_transform(s: &mut Session, p: &Value) -> Result<Value> {
         _ => return Err(bad("path.freeTransform", "space must be path or comp")),
     };
     let comp = s.project.comp(cid).ok_or(EngineError::NoComp)?;
-    let ctx = effectcraft_render::EvalCtx::new(&s.project, cid, comp, t);
+    let ctx = effectcraft_render::EvalCtx { expr: s.expr.as_deref(), ..effectcraft_render::EvalCtx::new(&s.project, cid, comp, t) };
     let mut placements = Vec::new();
     let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
     for (lid, uid) in &targets {

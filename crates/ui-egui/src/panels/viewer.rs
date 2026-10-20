@@ -1799,15 +1799,17 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 let delta = [total[0] - applied[0], total[1] - applied[1]];
+                let mut completed = applied;
                 if delta != [0.0; 2] {
                     let paths: std::collections::BTreeSet<_> = app.session.state.selected_vertices.iter().map(|v| (v.layer, v.mask)).collect();
                     let paths: Vec<_> = paths.into_iter().map(|(layer, mask)| json!({"layer": layer.0, "mask": mask})).collect();
                     if let Err(e) = app.session.execute("path.freeTransform", json!({"paths": paths, "space": "comp", "offset": delta, "merge": merge})) {
                         app.ui.status = e.to_string();
-                        return;
+                    } else {
+                        completed = total;
                     }
                 }
-                ui.data_mut(|dd| dd.insert_temp(gid, Gesture::Vertices { start, src, applied: total, layer }));
+                ui.data_mut(|dd| dd.insert_temp(gid, Gesture::Vertices { start, src, applied: completed, layer }));
             }
             Gesture::Overlay(d) => match d {
                 ov::Drag::Guide { index, vertical } => {

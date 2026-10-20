@@ -1892,3 +1892,38 @@ fn old_guides_load_as_pixel_guides_and_percent_round_trips() {
     // A zero-sized comp never divides by zero.
     assert!(g.px(0, 0).is_finite());
 }
+
+#[test]
+fn review_free_transform_uses_expression_driven_layer_and_shape_group_matrices() {
+    struct QuarterTurn;
+    impl effectcraft_render::ExprHost for QuarterTurn {
+        fn eval(&self, _: &effectcraft_render::EvalCtx, _: &effectcraft_project::Layer, _: &effectcraft_project::Property, _: &KV) -> Result<KV, String> {
+            Ok(KV::Scalar(90.0))
+        }
+    }
+    let mut s = comp();
+    let r = s.execute("shape.newPath", json!({"space":"path","vertices":[[10,10],[20,10],[20,20]],"closed":true})).unwrap();
+    let lid = r["layer"].as_u64().unwrap();
+    let group = r["group"].as_u64().unwrap();
+    let path = r["path"].as_u64().unwrap();
+    s.execute("prop.set", json!({"layer":lid,"path":"transform/position","value":[0,0]})).unwrap();
+    s.execute("prop.setExpression", json!({"layer":lid,"path":"transform/rotation","expression":"quarter_turn"})).unwrap();
+    let rotation = layer(&s, lid).props.find_group(group).unwrap().sub("transform").unwrap().get("rotation").unwrap().uid;
+    s.execute("prop.setExpression", json!({"layer":lid,"prop":rotation,"expression":"quarter_turn"})).unwrap();
+    s.expr = Some(std::sync::Arc::new(QuarterTurn));
+    let before = s.project.clone();
+    s.execute("path.freeTransform", json!({"layer":lid,"mask":path,"space":"comp","offset":[10,0]})).unwrap();
+    let value = layer(&s, lid).props.find_group(path).unwrap().get("path").unwrap().value.as_path().unwrap().vertices[0];
+    assert!(value[0].abs() < 1e-8 && (value[1] - 10.0).abs() < 1e-8, "{value:?}");
+    s.undo();
+    assert_eq!(s.project, before);
+}
+
+#[test]
+fn review_shape_and_mask_creation_options_pass_strict_parameter_validation() {
+    for command in ["shape.newShape", "layer.addMask"] {
+        let spec = crate::commands::find(command).unwrap();
+        let params = json!({"points":7,"rotation":30,"roundness":25,"innerRadius":40,"outerRoundness":15,"innerRoundness":10});
+        crate::commands::check_params(spec, &params).unwrap();
+    }
+}

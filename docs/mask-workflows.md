@@ -63,8 +63,8 @@ create duplicate property rows.
 During shape/mask creation, creation keys and the wheel adjust draft parameters. The same wheel
 gesture does not also zoom Composition. Double-clicking a shape creation tool uses source size for
 a mask on an existing layer, or composition size for a new shape. Center Anchor Point in Layer
-Content is available in the Transform menu; animated Position is compensated at the current key,
-without shifting other Position keys. These interaction changes are primarily validated in 2D.
+Content is available in the Transform menu; animated Position is compensated at the current time
+(a key is set there if needed), without shifting other Position keys. These interaction changes are primarily validated in 2D.
 
 ## Provenance
 
