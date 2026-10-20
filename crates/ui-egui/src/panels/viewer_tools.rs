@@ -99,7 +99,7 @@ pub(crate) fn draw_snap(ctx: &egui::Context, painter: &egui::Painter, map: &View
     for h in &s.hits {
         if let SnapSource::Layer(l) | SnapSource::Vertex(l) = h.source
             && let Some(layer) = ectx.comp.layer(l)
-            && let Some(b) = effectcraft_engine::render::content_bounds(ectx, layer)
+            && let Some(b) = effectcraft_engine::render::selection_bounds(ectx, layer)
         {
             let (m, _) = ectx.layer_to_comp(layer);
             let q: Vec<Pos2> = [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]]

@@ -420,6 +420,207 @@ fn tool_creates_mask_draws_a_mask_on_the_selected_shape_layer() {
     assert!(!h.state().session.state.shape_tool.creates_mask);
 }
 
+// ---- the keys of a shape being dragged out
+
+/// Press the mouse button at `from` and drag to `to` without releasing.
+fn drag_out(h: &mut Harness<'_, EffectcraftApp>, from: Pos2, to: Pos2, modifiers: egui::Modifiers) {
+    h.input_mut().events.push(Event::PointerMoved(from));
+    h.input_mut().events.push(Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers });
+    h.step();
+    for i in 1..=8 {
+        h.input_mut().events.push(Event::PointerMoved(from + (to - from) * (i as f32 / 8.0)));
+        h.step();
+    }
+}
+
+/// The first shape item `id` (`star`, `rect`…) of the top layer's first group.
+fn drawn(h: &Harness<'_, EffectcraftApp>, id: &str) -> effectcraft_engine::project::PropGroup {
+    let comp = h.state().session.active_comp().unwrap();
+    let g = comp.layers[0].props.sub("contents").unwrap().groups().next().unwrap();
+    g.sub("contents").unwrap().groups().find(|i| i.match_id == id).unwrap_or_else(|| panic!("no {id}")).clone()
+}
+
+fn scalar(g: &effectcraft_engine::project::PropGroup, id: &str) -> f64 {
+    g.get(id).unwrap_or_else(|| panic!("no {id}")).value.components()[0]
+}
+
+/// While a star is dragged out, Up / Down change its points, Left / Right its Outer Roundness and
+/// Page Up / Page Down its Inner Roundness; the keys don't nudge layers or step the time
+/// meanwhile. On a rounded rectangle Up / Down change the corners and Left / Right make them
+/// sharp or fully round.
+#[test]
+fn keys_change_a_shape_while_it_is_dragged_out() {
+    let mut h = harness();
+    h.state_mut().session.execute("view.snapping", json!({"value": false})).unwrap();
+    h.state_mut().ui.tool = Tool::Star;
+    h.run_steps(2);
+    let (n0, t0) = (h.state().session.active_comp().unwrap().layers.len(), h.state().session.time());
+    let (a, b) = (screen(&h, [100.0, 100.0]), screen(&h, [300.0, 300.0]));
+    drag_out(&mut h, a, b, Default::default());
+    for key in [egui::Key::ArrowUp, egui::Key::ArrowUp, egui::Key::ArrowUp, egui::Key::ArrowDown, egui::Key::ArrowRight, egui::Key::ArrowRight] {
+        h.key_press(key);
+        h.step();
+    }
+    for key in [egui::Key::PageUp, egui::Key::PageUp, egui::Key::PageUp, egui::Key::PageDown] {
+        h.key_press(key);
+        h.step();
+    }
+    release(&mut h, b, Default::default());
+    assert_eq!(h.state().session.active_comp().unwrap().layers.len(), n0 + 1);
+    assert_eq!(h.state().session.time(), t0, "Page Up / Page Down didn't step the time");
+    let star = drawn(&h, "star");
+    assert_eq!(scalar(&star, "points"), 7.0);
+    assert_eq!(scalar(&star, "outerRoundness"), 20.0);
+    assert_eq!(scalar(&star, "innerRoundness"), 20.0);
+    assert!((scalar(&star, "outerRadius") - 282.8427).abs() < 2.0 && (scalar(&star, "innerRadius") - 141.42135).abs() < 1.0);
+
+    // The next shape retains this tool's last settings.
+    h.state_mut().session.execute("edit.deselectAll", json!({})).unwrap();
+    drag(&mut h, a, b);
+    assert_eq!(scalar(&drawn(&h, "star"), "points"), 7.0);
+
+    // A rounded rectangle 200 × 100: 30% of 50 px, one Up makes it 40%; Right, fully round.
+    h.state_mut().session.execute("edit.deselectAll", json!({})).unwrap();
+    h.state_mut().ui.tool = Tool::RoundedRect;
+    h.run_steps(2);
+    let b = screen(&h, [300.0, 200.0]);
+    drag_out(&mut h, a, b, Default::default());
+    h.key_press(egui::Key::ArrowUp);
+    h.step();
+    release(&mut h, b, Default::default());
+    assert!((scalar(&drawn(&h, "rect"), "roundness") - 20.0).abs() < 0.5, "{}", scalar(&drawn(&h, "rect"), "roundness"));
+    h.state_mut().session.execute("edit.deselectAll", json!({})).unwrap();
+    drag_out(&mut h, a, b, Default::default());
+    h.key_press(egui::Key::ArrowLeft);
+    h.key_press(egui::Key::ArrowRight);
+    h.step();
+    release(&mut h, b, Default::default());
+    assert!((scalar(&drawn(&h, "rect"), "roundness") - 50.0).abs() < 0.5, "{}", scalar(&drawn(&h, "rect"), "roundness"));
+}
+
+#[test]
+fn wheel_during_shape_creation_changes_parameters_without_zooming() {
+    for tool in [Tool::Star, Tool::Polygon, Tool::RoundedRect] {
+        let mut h = harness();
+        h.state_mut().ui.tool = tool;
+        h.run_steps(2);
+        let a = screen(&h, [100.0, 100.0]);
+        let b = screen(&h, [280.0, 200.0]);
+        drag_out(&mut h, a, b, Default::default());
+        let view = (h.state().ui.viewer.zoom, h.state().ui.viewer.pan);
+        h.input_mut().events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 120.0),
+            modifiers: Default::default(),
+            phase: egui::TouchPhase::Move,
+        });
+        h.run_steps(12);
+        assert_eq!((h.state().ui.viewer.zoom, h.state().ui.viewer.pan), view, "wheel must not zoom or pan while drawing");
+        release(&mut h, b, Default::default());
+        h.run_steps(12);
+        assert_eq!((h.state().ui.viewer.zoom, h.state().ui.viewer.pan), view, "smoothed wheel tail must not zoom after release");
+        if tool == Tool::RoundedRect {
+            let rect = drawn(&h, "rect");
+            let size = rect.get("size").unwrap().value.components();
+            assert!((scalar(&rect, "roundness") / (size[0].min(size[1]) / 2.0) - 0.4).abs() < 0.001);
+        } else {
+            assert_eq!(scalar(&drawn(&h, "star"), "points"), if tool == Tool::Star { 6.0 } else { 7.0 });
+        }
+        h.input_mut().events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 120.0),
+            modifiers: Default::default(),
+            phase: egui::TouchPhase::Move,
+        });
+        h.run_steps(12);
+        assert_ne!(h.state().ui.viewer.zoom, view.0, "a new wheel gesture restores normal zoom after drawing");
+    }
+}
+
+/// Holding Spacebar while a shape is dragged out moves it with the pointer instead of resizing
+/// it, and doesn't start a preview.
+#[test]
+fn spacebar_repositions_a_shape_while_it_is_dragged_out() {
+    let mut h = harness();
+    h.state_mut().session.execute("view.snapping", json!({"value": false})).unwrap();
+    h.state_mut().ui.tool = Tool::Rectangle;
+    h.run_steps(2);
+    let (a, b, c) = (screen(&h, [100.0, 100.0]), screen(&h, [200.0, 160.0]), screen(&h, [240.0, 190.0]));
+    drag_out(&mut h, a, b, Default::default());
+    h.key_down(egui::Key::Space);
+    h.step();
+    for i in 1..=4 {
+        h.input_mut().events.push(Event::PointerMoved(b + (c - b) * (i as f32 / 4.0)));
+        h.step();
+    }
+    h.key_up(egui::Key::Space);
+    h.step();
+    release(&mut h, c, Default::default());
+    h.run_steps(2);
+    assert!(!h.state().playback.playing, "Spacebar didn't start a preview");
+    let comp = h.state().session.active_comp().unwrap();
+    let at = comp.layers[0].props.sub("transform").unwrap().get("position").unwrap().value.components();
+    let size = drawn(&h, "rect").get("size").unwrap().value.components();
+    assert!((size[0] - 100.0).abs() < 2.0 && (size[1] - 60.0).abs() < 2.0, "the size it had: {size:?}");
+    assert!((at[0] - 190.0).abs() < 2.0 && (at[1] - 160.0).abs() < 2.0, "moved by (40, 30): {at:?}");
+}
+
+/// Holding Cmd while a star is dragged out changes its outer radius alone: the inner radius
+/// stays where it was when Cmd went down.
+#[test]
+fn cmd_changes_a_stars_outer_radius_alone_while_it_is_dragged_out() {
+    let mut h = harness();
+    h.state_mut().session.execute("view.snapping", json!({"value": false})).unwrap();
+    h.state_mut().ui.tool = Tool::Star;
+    h.run_steps(2);
+    let (a, b, c) = (screen(&h, [100.0, 100.0]), screen(&h, [200.0, 200.0]), screen(&h, [300.0, 300.0]));
+    drag_out(&mut h, a, b, Default::default());
+    h.event(Event::ModifiersChanged(egui::Modifiers::COMMAND));
+    h.step();
+    for i in 1..=4 {
+        h.input_mut().events.push(Event::PointerMoved(b + (c - b) * (i as f32 / 4.0)));
+        h.step();
+    }
+    release(&mut h, c, egui::Modifiers::COMMAND);
+    h.event(Event::ModifiersChanged(Default::default()));
+    h.run_steps(2);
+    let star = drawn(&h, "star");
+    assert!((scalar(&star, "outerRadius") - 282.8427).abs() < 2.0, "{}", scalar(&star, "outerRadius"));
+    assert!((scalar(&star, "innerRadius") - 70.71068).abs() < 1.0, "the inner radius of the 100 px star: {}", scalar(&star, "innerRadius"));
+}
+
+/// Cmd+T with a shape layer's Path selected in the Timeline (none of its points selected) puts
+/// the free-transform box around the path.
+#[test]
+fn cmd_t_puts_the_free_transform_box_around_the_selected_shape_path() {
+    let mut h = harness();
+    let s = &mut h.state_mut().session;
+    s.execute("shape.newPath", json!({"vertices": [[200, 100], [400, 120], [300, 260]], "closed": true})).unwrap();
+    let (layer, path) = {
+        let l = &s.active_comp().unwrap().layers[0];
+        let g = l.props.sub("contents").unwrap().groups().next().unwrap();
+        (l.id, g.sub("contents").unwrap().groups().find(|i| i.match_id == "path").unwrap().uid)
+    };
+    s.execute("mask.selectVertices", json!({"vertices": []})).unwrap();
+    s.state.selected_props = vec![(layer, path)];
+    h.state_mut().ui.tool = Tool::Pen;
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
+    h.run_steps(2);
+    assert_eq!(h.state().ui.tool, Tool::Selection);
+    assert_eq!(h.state().session.state.selected_vertices.len(), 3);
+    assert!(h.state().auto.find("viewer.freeTransform.handle.0").is_some(), "the free-transform box is up");
+    // Another property of the layer selected instead: the Type tool again.
+    h.key_press(egui::Key::Escape);
+    let s = &mut h.state_mut().session;
+    s.execute("mask.selectVertices", json!({"vertices": []})).unwrap();
+    s.state.selected_props.clear();
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
+    h.run_steps(2);
+    assert_eq!(h.state().ui.tool, Tool::Type);
+}
+
 // ---- the shape tools' drag ghost
 
 /// Run frames until the viewer's background frame has landed, so the comp is painted (and not
@@ -492,6 +693,9 @@ fn shape_drag_ghost_shows_the_tools_own_shape_while_dragging() {
         let mid = mid_drag(&mut h, a, b, egui::Modifiers::default());
         let fill = fill_rgb(&h);
 
+        let radial = matches!(tool, Tool::Polygon | Tool::Star);
+        let centre = if radial { from } else { centre };
+        let corner = if radial { [600.0, 350.0] } else { corner };
         // Drawn while the button is down, and painted with the Fill rather than left to a hairline.
         let was = px_at(&before, &h, centre);
         let now = px_at(&mid, &h, centre);
@@ -797,6 +1001,10 @@ fn shape_pen_draws_a_closed_shape_layer() {
     assert_eq!(sp.vertices.len(), 3);
     assert!(sp.closed);
     assert!((sp.vertices[0][0] - (200.0 - 320.0)).abs() < 1.5, "{:?}", sp.vertices);
+    assert_eq!(h.state().session.state.selected_props, vec![(l.id, path.uid)]);
+    assert_eq!(h.state().session.state.selected_vertices.len(), 3, "closing the new shape selects its whole path");
+    assert!(h.state().ui.timeline.open_layers.contains(&l.id.0));
+    assert!(h.state().ui.timeline.open_groups.contains(&path.uid));
     // G cycles the Pen slot: Add Vertex, Delete Vertex, Convert Vertex, Mask Feather, Pen.
     let ctx = h.ctx.clone();
     let mut seen = vec![];
@@ -917,6 +1125,8 @@ fn pen_mask_undoes_step_by_step_and_double_click_moves_the_whole_mask() {
     h.run_steps(2);
     // Move one point: one undo step puts it back, the next reopens the path, the next removes the
     // last point.
+    let uid = h.state().session.state.selected_vertices[0].mask;
+    h.state_mut().session.execute("mask.selectVertices", json!({"vertices":[{"layer":plate,"mask":uid,"index":1}]})).unwrap();
     let (from, to) = (screen(&h, [500.0, 60.0]), screen(&h, [520.0, 80.0]));
     drag(&mut h, from, to);
     let moved = mask_path(&h, "Plate");
@@ -2524,4 +2734,110 @@ fn unselected_null_keeps_its_outline() {
     h.state_mut().session.execute("layer.setSwitch", json!({"layers": [n], "switch": "solo", "value": true})).unwrap();
     h.run_steps(2);
     assert_eq!(outlines(&h), 1, "a soloed null keeps its outline");
+}
+
+#[test]
+fn free_transform_modifier_changes_without_pointer_movement_use_drag_start_geometry() {
+    for shape in [false, true] {
+        use egui::Modifiers;
+        let mut s = Session::default();
+        s.execute("comp.new", json!({"width":640,"height":360,"duration":3})).unwrap();
+        let (layer, mask) = if shape {
+            let result = s.execute("shape.newPath", json!({"space":"path","vertices":[[200,100],[400,100],[400,200],[200,200]],"closed":true})).unwrap();
+            let layer = result["layer"].as_u64().unwrap();
+            let path = result["path"].as_u64().unwrap();
+            s.execute("prop.set", json!({"layer":layer,"path":"transform/position","value":[0,0]})).unwrap();
+            s.execute("prop.select", json!({"layer":layer,"prop":path})).unwrap();
+            (layer, path)
+        } else {
+            let layer = s.execute("layer.newSolid", json!({"width":640,"height":360})).unwrap()["layer"].as_u64().unwrap();
+            let mask = s.execute("mask.new", json!({"layer":layer,"vertices":[[200,100],[400,100],[400,200],[200,200]],"closed":true})).unwrap()["mask"]
+                .as_u64()
+                .unwrap();
+            (layer, mask)
+        };
+        let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_eframe(move |_| EffectcraftApp::new(s));
+        h.run_steps(3);
+        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::T);
+        h.run_steps(3);
+        let from = rect(&h, "viewer.freeTransform.handle.2").center();
+        let to = screen(&h, [450.0, 220.0]);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+        h.event(Event::PointerMoved(from));
+        h.step();
+        h.event(Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.step();
+        for i in 1..=8 {
+            h.event(Event::PointerMoved(from + (to - from) * (i as f32 / 8.0)));
+            h.step();
+        }
+        let vertices = |h: &Harness<'_, EffectcraftApp>| {
+            h.state()
+                .session
+                .active_comp()
+                .unwrap()
+                .layer(LayerId(layer))
+                .unwrap()
+                .props
+                .find_group(mask)
+                .unwrap()
+                .get("path")
+                .unwrap()
+                .value
+                .as_path()
+                .unwrap()
+                .vertices
+                .clone()
+        };
+        for (mods, first, last) in [
+            (Modifiers::SHIFT, [200.0, 100.0], [445.0, 222.5]),
+            (Modifiers { command: true, shift: true, ..Default::default() }, [155.0, 77.5], [445.0, 222.5]),
+            (Modifiers::COMMAND, [150.0, 80.0], [450.0, 220.0]),
+            (Modifiers::NONE, [200.0, 100.0], [450.0, 220.0]),
+        ] {
+            h.event(Event::ModifiersChanged(mods));
+            h.run_steps(3);
+            let points = vertices(&h);
+            for (got, want) in [(points[0], first), (points[2], last)] {
+                assert!((got[0] - want[0]).abs() < 0.002 && (got[1] - want[1]).abs() < 0.002, "{mods:?}: {got:?} != {want:?}");
+            }
+        }
+        h.event(Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(3);
+        let modified = vertices(&h);
+        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
+        h.run_steps(3);
+        assert_eq!(vertices(&h), vec![[200.0, 100.0], [400.0, 100.0], [400.0, 200.0], [200.0, 200.0]]);
+        assert!(h.state().auto.find("viewer.freeTransform.handle.2").is_some());
+        h.key_press_modifiers(Modifiers { command: true, shift: true, ..Default::default() }, egui::Key::Z);
+        h.run_steps(3);
+        assert_eq!(vertices(&h), modified);
+    }
+}
+
+#[test]
+fn path_marquee_combines_shape_and_mask_points_without_moving_the_layer() {
+    let mut session = Session::default();
+    session.execute("comp.new", json!({"width":640,"height":360,"duration":3})).unwrap();
+    let shape = session.execute("shape.newPath", json!({"space":"path","vertices":[[100,100],[300,100],[300,250],[100,250]],"closed":true})).unwrap();
+    let layer = shape["layer"].as_u64().unwrap();
+    let path = shape["path"].as_u64().unwrap();
+    session.execute("prop.set", json!({"layer":layer,"path":"transform/position","value":[0,0]})).unwrap();
+    let mask = session.execute("mask.new", json!({"layer":layer,"vertices":[[140,140],[350,140],[350,280]],"closed":true})).unwrap()["mask"].as_u64().unwrap();
+    session.execute("prop.select", json!({"layer":layer,"prop":path})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_eframe(move |_| EffectcraftApp::new(session));
+    h.run_steps(3);
+    let before = h.state().session.project.clone();
+    let from = screen(&h, [75.0, 75.0]);
+    let to = screen(&h, [165.0, 165.0]);
+    drag(&mut h, from, to);
+    let vertices = &h.state().session.state.selected_vertices;
+    assert_eq!(vertices.len(), 2, "{vertices:?}");
+    assert!(vertices.iter().any(|v| v.mask == path && v.index == 0));
+    assert!(vertices.iter().any(|v| v.mask == mask && v.index == 0));
+    assert_eq!(h.state().session.project, before, "marquee only changes selection");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
+    h.run_steps(3);
+    assert_eq!(h.state().session.state.selected_vertices.len(), 2);
+    assert!(h.state().auto.find("viewer.freeTransform.handle.0").is_some());
 }
